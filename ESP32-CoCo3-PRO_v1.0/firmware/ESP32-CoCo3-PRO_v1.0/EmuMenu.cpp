@@ -6,7 +6,7 @@
 
 #include "EmuMenu.h"
 #include "main.h"
-#include "ROMS_Source.h"
+#include "roms.h"
 #include <cstring>  // memcpy, utilisé par l'outil de configuration joystick
 #include "gime_video.h"
 #include "gime.h"        // gime_ram_size

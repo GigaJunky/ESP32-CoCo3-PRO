@@ -7,14 +7,19 @@
 #ifndef __MAIN_H
 #define __MAIN_H
 
+#include "BoardSelect.h"
 #include "driver/adc.h"
 #include "esp_adc_cal.h"
 #include "SD_MMC.h"
 #include "EmuMenu.h"
-#include "ROMS_Source.h"
+#include "roms.h"
 #include <EEPROM.h>
 //----------------------
+#ifdef BOARD_CYD_S3
+#define VSYNC_PORT ((gpio_num_t)CYD_VSYNC_GPIO)
+#else
 #define VSYNC_PORT GPIO_NUM_1
+#endif
 #define HSYNC_PORT GPIO_NUM_2
 
 #define PSRAM_EMU
@@ -94,9 +99,15 @@ struct DriveStruct
 #define FW_VERSION_DATE  "2026-10-26"
 
 
+#ifdef BOARD_CYD_S3
+#define SD_MMC_CMD CYD_SD_CMD
+#define SD_MMC_CLK CYD_SD_CLK
+#define SD_MMC_D0  CYD_SD_D0
+#else
 #define SD_MMC_CMD 38 // Please do not modify it.
 #define SD_MMC_CLK 39 // Please do not modify it.
 #define SD_MMC_D0  40 // Please do not modify it.
+#endif
 
 //------------- Keys definition for Emulator in Custom Menu
 
@@ -298,8 +309,13 @@ void Do_COCO2_GRAPHMODE_128X64X4(void);
 void Do_COCO2_GRAPHMODE_128X64X2(void);
 void Do_COCO2_GRAPHMODE_64X64X4(void);
 
+#ifdef BOARD_CYD_S3
+#define DEBUG1 CYD_DEBUG_PIN
+#define DEBUG2 CYD_DEBUG_PIN
+#else
 #define DEBUG1 13
 #define DEBUG2 13
+#endif
 
 // trois réglages d'Overclock (menu F12, touche O) OC_OFF : 0,89 / 1,79 MHz exacts, 60 images/s (cycle
 // accurate) OC_CPU : 60 images/s, horloge juste

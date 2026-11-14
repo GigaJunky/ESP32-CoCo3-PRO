@@ -23,7 +23,12 @@ void    Audio_SetFloor(bool on);
 void   Audio_Push(uint32_t t_ticks, uint8_t level); // coeur CPU : nouveau niveau (0-255)
 // stéréo. Gauche = GPIO 47 (broche de Audio_Init), droite = AUDIO_R_GPIO. Mono (défaut) : une ligne,
 // gauche et droite moyennées
+#include "BoardSelect.h"
+#ifdef BOARD_CYD_S3
+#define AUDIO_R_GPIO CYD_AUDIO_R_GPIO
+#else
 #define AUDIO_R_GPIO 12
+#endif
 void   Audio_PushLR(uint32_t t_ticks, uint8_t left, uint8_t right);
 void   Audio_SetStereo(bool on);
 bool   Audio_GetStereo(void);                       // réglage demandé

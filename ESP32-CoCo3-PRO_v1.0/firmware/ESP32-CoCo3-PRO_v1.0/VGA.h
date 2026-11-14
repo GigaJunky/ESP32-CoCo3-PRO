@@ -6,6 +6,11 @@
 #ifndef VGA_H
 #define VGA_H
 
+#include "BoardSelect.h"
+#ifdef BOARD_CYD_S3
+#include "TftVga.h"   // CYD: same VGA interface, drawn on the SPI screen
+#else
+
 #include "PinConfig.h"
 #include "Mode.h"
 #include "DMAVideoBuffer.h"
@@ -57,5 +62,7 @@ class VGA
 	void programTimings(const Mode &mode);
 
 };
+
+#endif // BOARD_CYD_S3
 
 #endif // VGA_h

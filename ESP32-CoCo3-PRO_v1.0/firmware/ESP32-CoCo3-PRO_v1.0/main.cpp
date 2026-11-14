@@ -211,9 +211,6 @@ static bool Mouse_Comparator(uint8_t mux, bool *result);
 
 #include "ESP32S3vga.h"
 #include <GfxWrapper.h>
-#include "FreeMonoBoldOblique24pt7b.h"
-#include "FreeSerif24pt7b.h"
-#include "FreeMono9pt7b.h"
 
 //---------------------------- USB STACK
 // ESP32-Coco2 : prise en charge du hub USB natif on-board (librairie EspUsbHost)
@@ -350,9 +347,19 @@ void UpdateJoyMap(uint8_t * Data, uint8_t usbNum);
 // Core ESP32-Arduino 3.x (ESP-IDF 5.x) : l'objet global "GPIO" (accès direct GPIO.out1_w1ts.val, etc.)
 // n'est plus disponible tel quel
 #include "soc/gpio_reg.h"
+#include "soc/rtc_cntl_reg.h"   // RTC_CNTL_USB_CONF_REG (rendre le port USB natif au USB-Serial/JTAG)
+#include "soc/usb_serial_jtag_reg.h"   // USB_SERIAL_JTAG_CONF0_REG (rendre le port USB au ROM)
+#include "soc/periph_defs.h"
+#include "hal/usb_serial_jtag_ll.h"   // usb_serial_jtag_ll_phy_*_pull_override (pull-up D+ du USB-Serial/JTAG)
+#include <driver/periph_ctrl.h>   // periph_module_reset / periph_module_disable (comme VGA.cpp)
 
+#ifdef BOARD_CYD_S3
+#define LED_PORT_ANODE CYD_LED_ANODE
+#define LED_PORT_CATHODE CYD_LED_CATHODE
+#else
 #define LED_PORT_ANODE 45
 #define LED_PORT_CATHODE 46
+#endif
 
 #define LED_PORT_CATHODE_HI() REG_WRITE(GPIO_OUT1_W1TS_REG, (1 << (LED_PORT_CATHODE - 32)));   // Set HIGH
 #define LED_PORT_CATHODE_LOW() REG_WRITE(GPIO_OUT1_W1TC_REG, (1 << (LED_PORT_CATHODE - 32)));  // Set LOW
@@ -3036,10 +3043,26 @@ void InitSD_Card(void)
 
   SD_MMC.setPins(SD_MMC_CLK, SD_MMC_CMD, SD_MMC_D0);
 
+#ifdef BOARD_CYD_S3
+  // CYD: log what happens (F9) and retry slower / with the internal pull-ups on if the first mount fails
+  bool sdOk = SD_MMC.begin("/sdcard", true, false, CYD_SD_KHZ, 12);
+  LogOut.printf("[SD] CYD mount at %d kHz: %s (CLK %d CMD %d D0 %d) ; screen SPI %d MHz\n", CYD_SD_KHZ, sdOk ? "OK" : "FAILED", SD_MMC_CLK, SD_MMC_CMD, SD_MMC_D0, CYD_TFT_HZ / 1000000);
+  if (!sdOk)
+  {
+    SD_MMC.end();
+    gpio_set_pull_mode((gpio_num_t)SD_MMC_CMD, GPIO_PULLUP_ONLY);
+    gpio_set_pull_mode((gpio_num_t)SD_MMC_D0, GPIO_PULLUP_ONLY);
+    SD_MMC.setPins(SD_MMC_CLK, SD_MMC_CMD, SD_MMC_D0);
+    sdOk = SD_MMC.begin("/sdcard", true, false, SDMMC_FREQ_PROBING, 12);
+    LogOut.printf("[SD] CYD mount at 400 kHz with pull-ups: %s\n", sdOk ? "OK" : "FAILED");
+  }
+  if (!sdOk) return;
+#else
   if (!SD_MMC.begin("/sdcard", true, false, SDMMC_FREQ_DEFAULT, 12)) {
     debugln("Card Mount Failed");
     return;
   }
+#endif
   uint8_t cardType = SD_MMC.cardType();
   if(cardType == CARD_NONE){
     debugln("No SD_MMC card attached");
@@ -3067,6 +3090,7 @@ void InitSD_Card(void)
 
 #define ROM_OFFSET 0x8000
 #define RAM_MODE 0x0000
+static unsigned g_roms_missing = 0;
 void InitPeripherals_and_Others(void)
 {
 
@@ -3079,6 +3103,7 @@ void InitPeripherals_and_Others(void)
   delay(10);
 
   InitSD_Card();
+  g_roms_missing = Roms_Load();   // ROMs (and optional fonts) from the SD card
 
   CheckFirmwareUpdate();
 
@@ -3145,7 +3170,9 @@ void InitPeripherals_and_Others(void)
 
   InitPorts();
 
-  CopyCoCo3ROMS(); // ROM interne coco3[] -> rom[], disk21[] -> cart_rom
+  CopyCoCo3ROMS(); // ROM interne coco3 -> rom[], disk21 -> cart_rom (both loaded from the SD card)
+  if (g_roms_missing & ROMS_MISSING_COCO3) Overlay_Request("ROMS NOT FOUND", "Put coco3.rom in /ROMS on the SD card", 60000, "(and disk21.rom for disks)", "then press reset");
+  else if (g_roms_missing & ROMS_MISSING_DISK21) Overlay_Request("DISK21.ROM NOT FOUND", "Disk BASIC needs /ROMS/disk21.rom", 8000, nullptr, nullptr);
   gime_video_init(font_gimeChip);   // police texte GIME 128 car. x 12 lignes
   gime_field_sync_cb = PIA0_FieldSync;   // FS/HS du balayage émulé
   gime_field_sync_rise_cb = PIA0_FieldSyncRise;
@@ -3173,7 +3200,11 @@ void InitPorts(void)
 {
   // Core ESP32-Arduino 3.x : ledcAttach remplace ledcSetup+ledcAttachPin (les canaux sont assignés
   // automatiquement) et ledcWrite prend maintenant le numéro de pin, plus le canal
+#ifdef BOARD_CYD_S3
+  if (Audio_Init(CYD_AUDIO_GPIO))
+#else
   if (Audio_Init(47))
+#endif
   {
     BOOTLOGLN("[AUDIO] sortie I2S PDM 48 kHz, horodatee (retard 20 ms)");
   }
@@ -3532,7 +3563,11 @@ void IRAM_ATTR Field_Synch_Interrupt_Flag()
 
 bool IsButtonPressed(void)
 {
+#ifdef BOARD_CYD_S3
+  if (true)   // no joystick button pin on this board
+#else
   if (digitalRead(21) == true)
+#endif
   {
     return false;
   }
@@ -3801,6 +3836,26 @@ char g_log_note[96] = "";
 volatile bool g_log_note_ready = false;
 // redémarrage propre. esp_restart arme un chien de garde de secours puis arrête l'autre coeur
 extern bool State_WaitParkedPublic(void);
+// Rend le port USB natif (GPIO 19/20) au USB-Serial/JTAG integre. L'hote USB (EspUsbHost) l'a branche sur
+// le controleur OTG ; sans cette bascule le PC ne voit pas de port serie. Meme sequence que
+// usb_switch_to_cdc_jtag() du core Arduino (esp32-hal-tinyusb.c). Utilisee par Usb_UnlockIfNoHub().
+static void Usb_BackToSerialJtag(void)
+{
+  periph_module_reset(PERIPH_USB_MODULE);
+  periph_module_disable(PERIPH_USB_MODULE);                                   // coupe le controleur OTG
+  CLEAR_PERI_REG_MASK(RTC_CNTL_USB_CONF_REG, RTC_CNTL_SW_HW_USB_PHY_SEL | RTC_CNTL_SW_USB_PHY_SEL | RTC_CNTL_USB_PAD_ENABLE);
+  CLEAR_PERI_REG_MASK(USB_SERIAL_JTAG_CONF0_REG, USB_SERIAL_JTAG_PHY_SEL);    // pas de PHY externe
+  CLEAR_PERI_REG_MASK(USB_SERIAL_JTAG_CONF0_REG, USB_SERIAL_JTAG_USB_PAD_ENABLE);
+  pinMode(19, OUTPUT_OPEN_DRAIN); pinMode(20, OUTPUT_OPEN_DRAIN);             // D- / D+ a 0 : le PC doit se reenumerer
+  digitalWrite(19, LOW); digitalWrite(20, LOW);
+  delay(100);
+  // pull-up D+ interne du USB-Serial/JTAG (c'est ce qui annonce « peripherique branche » au PC), comme le core
+  const usb_serial_jtag_pull_override_vals_t pull_conf = {.dp_pu = 1, .dm_pu = 0, .dp_pd = 0, .dm_pd = 0};
+  usb_serial_jtag_ll_phy_enable_pull_override(&pull_conf);
+  usb_serial_jtag_ll_phy_disable_pull_override();
+  SET_PERI_REG_MASK(USB_SERIAL_JTAG_CONF0_REG, USB_SERIAL_JTAG_USB_PAD_ENABLE);   // broches -> USB-Serial/JTAG
+  delay(50);
+}
 void Sys_Restart(void)
 {
   g_rtc_step = STEP_REBOOT;
@@ -3814,6 +3869,40 @@ void Sys_Restart(void)
   Serial.flush();
   delay(50);
   esp_restart();
+}
+// Port USB natif libre quand aucun hub/clavier n'est branche : si rien ne s'est enumere sur l'hote USB
+// quelques secondes apres le demarrage (cable du PC seul ou rien), l'hote est arrete et le port est rendu au
+// USB-Serial/JTAG : le PC voit un port serie et l'IDE Arduino / esptool peuvent flasher sans BOOT/RESET.
+// Un hub branche apres coup n'est alors plus detecte avant un redemarrage. Mettre USB_AUTO_UNLOCK a 0 pour
+// garder l'hote USB toujours actif.
+#ifndef USB_AUTO_UNLOCK
+#define USB_AUTO_UNLOCK 1
+#endif
+#define USB_UNLOCK_AFTER_MS 6000   // un hub + clavier s'enumerent en 1 a 3 s
+static void Usb_UnlockIfNoHub(void)
+{
+#if USB_AUTO_UNLOCK
+  static bool done = false;
+  if (done || millis() < USB_UNLOCK_AFTER_MS) return;
+  done = true;
+  if (!UsbHost || UsbHost->deviceCount() != 0) return;   // un peripherique est la : on garde l'hote
+  UsbHost->end();
+  Usb_BackToSerialJtag();
+  LogOut.println("[USB] aucun peripherique USB : hote arrete, port rendu au PC (USB-Serial/JTAG)");
+#endif
+}
+// tache dediee (ne depend pas de loop()) : attend USB_UNLOCK_AFTER_MS puis applique la regle ci-dessus
+static void Usb_UnlockTask(void *)
+{
+  while (millis() < USB_UNLOCK_AFTER_MS) vTaskDelay(pdMS_TO_TICKS(200));
+  Usb_UnlockIfNoHub();
+  vTaskDelete(nullptr);
+}
+void Usb_StartUnlockTask(void)
+{
+#if USB_AUTO_UNLOCK
+  xTaskCreatePinnedToCore(Usb_UnlockTask, "UsbUnlock", 4096, nullptr, 1, nullptr, 1);
+#endif
 }
 static bool s_crash_boot = false;         // ce démarrage suit un plantage
 
@@ -4489,6 +4578,7 @@ void CPUCore_Task(void *pvParameters)
 #define MALLOC_EXT_LIMIT 256
 void setup()
 {
+  Roms_InitFonts();   // free built-in font (before any text is drawn)
 #if MALLOC_EXT_LIMIT
   heap_caps_malloc_extmem_enable(MALLOC_EXT_LIMIT);
 #endif
@@ -4544,8 +4634,13 @@ BOOTLOG("[DIAG] Heap interne libre = %u octets\n", (unsigned)heap_caps_get_free_
 
   DISKETTE_LED_OFF();
 
+#ifdef BOARD_CYD_S3
+#define SERIAL1_TX CYD_SERIAL1_TX
+#define SERIAL1_RX CYD_SERIAL1_RX
+#else
 #define SERIAL1_TX 41
 #define SERIAL1_RX 42
+#endif
 #define SERIAL1_BAUD 115200
 
   Serial1.setRxBufferSize(2048);   // RS-232 Pak (liaison UART)
@@ -4591,6 +4686,7 @@ BOOTLOG("[DIAG] Heap interne libre = %u octets\n", (unsigned)heap_caps_get_free_
     NULL,               // Handle
     1   // coeur 1 // Core 1 CPUCore
   );
+  Usb_StartUnlockTask();   // port USB natif rendu au PC si aucun hub/clavier (voir Usb_UnlockIfNoHub)
   LogOut.printf("[BOOT] setup() end (VideoCore task created)\n");
 }
 
@@ -6386,7 +6482,7 @@ void CopyCoCo3ROMS(void)
     {
       if (fdc_seen) { c.mode[i] = SLOT_EMPTY; continue; }   // un seul contrôleur de disquette
       fdc_seen = true;
-      memcpy(g_slot_rom[i], disk21, sizeof(disk21));
+      memcpy(g_slot_rom[i], disk21, ROM_DISK21_SIZE);
       memcpy(g_slot_rom[i] + 16384, g_slot_rom[i], 16384);   // miroir (16 Ko, A14 non reliée)
     }
   }

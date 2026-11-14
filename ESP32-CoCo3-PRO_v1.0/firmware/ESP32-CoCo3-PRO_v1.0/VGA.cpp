@@ -5,6 +5,7 @@
 
 #include <Arduino.h>
 #include "VGA.h"
+#ifndef BOARD_CYD_S3   // (on the CYD the picture goes through TftVga.cpp)
 #include <esp_rom_gpio.h>
 #include <esp_rom_sys.h>
 #include <hal/gpio_hal.h>
@@ -840,3 +841,4 @@ void VGA::programTimings(const Mode &mode)
 
 	LCD_CAM.lcd_misc.lcd_next_frame_en = 1; // ?? limitation
 }
+#endif // !BOARD_CYD_S3

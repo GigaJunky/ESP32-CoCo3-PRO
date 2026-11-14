@@ -635,6 +635,10 @@ void Audio_Render(int16_t *out, size_t n, uint32_t now)
 #ifdef ESP_PLATFORM
 #include <Arduino.h>
 #include "driver/i2s_pdm.h"
+#include "driver/i2s_std.h"
+#ifdef BOARD_CYD_S3
+#include <Wire.h>
+#endif
 #include "driver/gpio.h"     // gpio_reset_pin (voie droite rendue en mono)
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -656,6 +660,50 @@ static bool Pdm_Create(void)
   cc.dma_desc_num = 4;
   cc.dma_frame_num = 128;                           // 4 x 128 échantillons = 10,7 ms de DMA
   if (i2s_new_channel(&cc, &s_tx, nullptr) != ESP_OK) { s_tx = nullptr; return false; }
+#ifdef BOARD_CYD_S3
+  {
+    // CYD: the speaker is behind an ES8311 codec. Standard I2S with a master clock; same 16-bit samples as the PDM path.
+    static bool codecDone = false;
+    if (!codecDone)
+    {
+      codecDone = true;
+      Wire.begin(CYD_I2C_SDA, CYD_I2C_SCL);
+      // same register set micro-js uses on this board: reset, clocks from MCLK = 256 x fs, 16-bit I2S slave, DAC + output on
+      static const uint8_t regs[][2] = {{0x00, 0x1F}, {0x00, 0x00}, {0x00, 0x80}, {0x01, 0x3F}, {0x02, 0x00},
+                                        {0x03, 0x10}, {0x04, 0x10}, {0x05, 0x00}, {0x06, 0x03}, {0x07, 0x00},
+                                        {0x08, 0xFF}, {0x09, 0x0C}, {0x0A, 0x0C}, {0x0D, 0x01}, {0x0E, 0x02},
+                                        {0x12, 0x00}, {0x13, 0x10}, {0x1C, 0x6A}, {0x37, 0x08}, {0x32, CYD_CODEC_VOL}};
+      int fails = 0;
+      for (auto &r : regs)
+      {
+        Wire.beginTransmission(CYD_CODEC_ADDR);
+        Wire.write(r[0]);
+        Wire.write(r[1]);
+        if (Wire.endTransmission()) fails++;
+      }
+      pinMode(CYD_AMP_EN, OUTPUT);
+      digitalWrite(CYD_AMP_EN, LOW);   // amplifier on
+      Serial.printf("[AUDIO] CYD ES8311 codec: %s\n", fails ? "NOT answering on I2C" : "set up");
+    }
+    i2s_std_config_t sc = {
+      .clk_cfg  = I2S_STD_CLK_DEFAULT_CONFIG(AUDIO_RATE),
+      .slot_cfg = I2S_STD_PHILIPS_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, s_stereo ? I2S_SLOT_MODE_STEREO : I2S_SLOT_MODE_MONO),
+      .gpio_cfg = {
+        .mclk = (gpio_num_t)CYD_I2S_MCLK, .bclk = (gpio_num_t)CYD_I2S_BCK, .ws = (gpio_num_t)CYD_I2S_WS,
+        .dout = (gpio_num_t)CYD_I2S_DOUT, .din = I2S_GPIO_UNUSED,
+        .invert_flags = {.mclk_inv = false, .bclk_inv = false, .ws_inv = false},
+      },
+    };
+    sc.slot_cfg.slot_mask = I2S_STD_SLOT_BOTH;   // mono: the same sample on both slots
+    if (i2s_channel_init_std_mode(s_tx, &sc) != ESP_OK || i2s_channel_enable(s_tx) != ESP_OK)
+    {
+      i2s_del_channel(s_tx);
+      s_tx = nullptr;
+      return false;
+    }
+    return true;
+  }
+#endif
   i2s_pdm_tx_config_t pc = {
 #ifdef I2S_PDM_TX_CLK_DAC_DEFAULT_CONFIG
     .clk_cfg  = I2S_PDM_TX_CLK_DAC_DEFAULT_CONFIG(AUDIO_RATE),
